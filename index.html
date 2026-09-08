@@ -431,3 +431,55 @@
     * { transition: none !important; }
   }
 </style>
+
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500;600;700&display=swap">
+
+<div class="wrap">
+  <header class="top">
+    <div class="brand">
+      <h1>Dispatch Bench</h1>
+      <span class="tag">RR · Preemptive Priority</span>
+    </div>
+    <p class="sub">Edit the process set once, watch the CPU dispatcher schedule it two different ways — Gantt chart, ready queue and metrics, live.</p>
+  </header>
+
+  <section class="card" id="editor-card">
+    <div class="card-head">
+      <h2>Process set</h2>
+      <div class="mode-tabs" id="mode-tabs">
+        <button data-mode="compare" class="active">Compare both</button>
+        <button data-mode="rr">Round Robin</button>
+        <button data-mode="priority">Preemptive Priority</button>
+      </div>
+    </div>
+    <div class="editor-body">
+      <table class="proc-table">
+        <thead>
+          <tr>
+            <th>Process</th>
+            <th>Arrival</th>
+            <th>Burst</th>
+            <th>Priority</th>
+            <th></th>
+          </tr>
+        </thead>
+        <tbody id="proc-rows"></tbody>
+      </table>
+      <div class="editor-controls">
+        <button class="add-row" id="add-row-btn" type="button">+ Add process</button>
+        <div class="quantum-field">
+          <span>Time quantum (Round Robin)</span>
+          <input type="number" id="quantum-input" min="1" value="2">
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <div class="legend" id="legend"></div>
+
+  <div id="panels"></div>
+
+  <footer class="note">Lower priority number = higher priority · time in whole units · ties favour the process already running</footer>
+</div>
+
+<div id="tooltip" hidden></div>
