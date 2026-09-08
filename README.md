@@ -4,7 +4,7 @@ This is a college project for our Operating Systems course. It simulates and vis
 
 ## Features
 - **Interactive Process Editor**: Add processes and edit their Arrival Time (AT), Burst Time (BT), and Priority on the fly.
-- **Live Gantt Chart**: Visualizes the timeline of process execution.
+- **Live Gantt Chart**: Visualizes the timeline of pVrocess execution.
 - **Live Ready Queue State**: Watch the simulation step-by-step to see exactly which process is running and which ones are waiting in the queue at any given time unit `t`.
 - **Metrics Table**: Automatically calculates Completion Time (CT), Turnaround Time (TAT), and Waiting Time (WT) alongside their averages.
 
@@ -42,3 +42,5 @@ The tables at the bottom of the tool dynamically aggregate these numbers and com
 
 ## How to run
 Since this is built with standard HTML, CSS, and JS, there are no dependencies or build steps required. Simply open `index.html` in any modern web browser to view and interact with the visualizer!
+
+For Live Server: https://gantt-chart-visualizer.vercel.app/
