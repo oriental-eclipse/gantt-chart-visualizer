@@ -1117,3 +1117,107 @@
     tt.hidden = false;
   }
   function hideTooltip() { document.getElementById("tooltip").hidden = true; }
+
+  function renderMetricsTable(ps) {
+    var wrap = document.getElementById("metrics-" + ps.key);
+    var showPriority = ps.key === "priority";
+
+    var table = document.createElement("table");
+    table.className = "metrics";
+    var thead = "<thead><tr><th>Process</th><th>AT</th><th>BT</th>" +
+      (showPriority ? "<th>Pr</th>" : "") +
+      "<th>CT</th><th>TAT</th><th>WT</th></tr></thead>";
+    var rows = ps.metrics.map(function (m) {
+      return "<tr><td>" + m.pid + "</td><td>" + m.arrival + "</td><td>" + m.burst + "</td>" +
+        (showPriority ? "<td>" + m.priority + "</td>" : "") +
+        "<td>" + m.completion + "</td><td>" + m.turnaround + "</td><td>" + m.waiting + "</td></tr>";
+    }).join("");
+
+    var avgTat = ps.metrics.reduce(function (a, m) { return a + m.turnaround; }, 0) / ps.metrics.length;
+    var avgWt = ps.metrics.reduce(function (a, m) { return a + m.waiting; }, 0) / ps.metrics.length;
+    var avgRow = "<tr class='avg-row'><td>Average</td><td></td><td></td>" +
+      (showPriority ? "<td></td>" : "") +
+      "<td></td><td>" + avgTat.toFixed(2) + "</td><td>" + avgWt.toFixed(2) + "</td></tr>";
+
+    table.innerHTML = thead + "<tbody>" + rows + avgRow + "</tbody>";
+    wrap.innerHTML = "";
+    wrap.appendChild(table);
+  }
+
+  // ---------- top-level orchestration ----------
+
+  function recomputeAll() {
+    var rrSegments = roundRobin(state.processes, state.quantum);
+    panelStates.rr.segments = rrSegments;
+    panelStates.rr.metrics = computeMetrics(state.processes, rrSegments);
+    panelStates.rr.maxTime = rrSegments.length ? rrSegments[rrSegments.length - 1].end : 0;
+    pausePanel(panelStates.rr);
+    panelStates.rr.currentTime = panelStates.rr.maxTime;
+
+    var ppSegments = preemptivePriority(state.processes);
+    panelStates.priority.segments = ppSegments;
+    panelStates.priority.metrics = computeMetrics(state.processes, ppSegments);
+    panelStates.priority.maxTime = ppSegments.length ? ppSegments[ppSegments.length - 1].end : 0;
+    pausePanel(panelStates.priority);
+    panelStates.priority.currentTime = panelStates.priority.maxTime;
+
+    renderActivePanels();
+  }
+
+  function renderActivePanels() {
+    pausePanel(panelStates.rr);
+    pausePanel(panelStates.priority);
+    var container = document.getElementById("panels");
+    container.innerHTML = "";
+    var order = state.mode === "compare" ? ["rr", "priority"] : [state.mode];
+    order.forEach(function (key) {
+      container.appendChild(buildPanelSkeleton(panelStates[key]));
+      renderPanel(panelStates[key]);
+    });
+  }
+
+  function wireGlobalControls() {
+    document.getElementById("add-row-btn").addEventListener("click", function () {
+      if (state.processes.length >= MAX_PROCESSES) return;
+      var n = state.processes.length + 1;
+      var last = state.processes[state.processes.length - 1];
+      state.processes.push({
+        pid: "P" + n,
+        arrival: last ? last.arrival + 1 : 0,
+        burst: 4,
+        priority: n
+      });
+      renderProcTable();
+      renderLegend();
+      recomputeAll();
+    });
+
+    document.getElementById("quantum-input").addEventListener("change", function (e) {
+      var v = parseInt(e.target.value, 10);
+      if (isNaN(v) || v < 1) v = 1;
+      state.quantum = v;
+      e.target.value = v;
+      recomputeAll();
+    });
+
+    var tabs = document.querySelectorAll("#mode-tabs button");
+    Array.prototype.forEach.call(tabs, function (btn) {
+      btn.addEventListener("click", function () {
+        Array.prototype.forEach.call(tabs, function (b) { b.classList.remove("active"); });
+        btn.classList.add("active");
+        state.mode = btn.dataset.mode;
+        renderActivePanels();
+      });
+    });
+  }
+
+  function init() {
+    renderProcTable();
+    renderLegend();
+    wireGlobalControls();
+    recomputeAll();
+  }
+
+  init();
+})();
+</script>
