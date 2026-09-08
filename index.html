@@ -651,3 +651,469 @@
 
     return mergeUnits(raw);
   }
+
+  // ---------- derived state at time t (for live queue panel) ----------
+
+  function ranTimeBefore(segments, pid, t) {
+    var sum = 0;
+    segments.forEach(function (s) {
+      if (s.pid === pid && s.start < t) sum += Math.min(s.end, t) - s.start;
+    });
+    return sum;
+  }
+
+  function liveStateAt(processes, segments, t) {
+    var running = null;
+    segments.forEach(function (s) {
+      if (t >= s.start && t < s.end) running = s.pid;
+    });
+    var ready = [];
+    var completed = 0;
+    processes.forEach(function (p) {
+      var remainingBurst = p.burst - ranTimeBefore(segments, p.pid, t);
+      if (remainingBurst <= 0) { completed++; return; }
+      if (p.arrival <= t && p.pid !== running) ready.push(p);
+    });
+    ready.sort(function (a, b) { return a.arrival - b.arrival || (a.pid < b.pid ? -1 : 1); });
+    return { running: running, ready: ready, completed: completed };
+  }
+
+  // ---------- color helpers ----------
+
+  function cssVar(name) {
+    return getComputedStyle(document.documentElement).getPropertyValue(name).trim();
+  }
+
+  function colorForPid(pid) {
+    var idx = state.processes.findIndex(function (p) { return p.pid === pid; });
+    if (idx < 0) return cssVar("--idle-fill");
+    return cssVar(PALETTE[idx % PALETTE.length]);
+  }
+
+  function hexToRgb(hex) {
+    hex = hex.replace("#", "");
+    return {
+      r: parseInt(hex.substring(0, 2), 16),
+      g: parseInt(hex.substring(2, 4), 16),
+      b: parseInt(hex.substring(4, 6), 16)
+    };
+  }
+
+  function relLuminance(hex) {
+    var c = hexToRgb(hex);
+    var lin = [c.r, c.g, c.b].map(function (v) {
+      v /= 255;
+      return v <= 0.03928 ? v / 12.92 : Math.pow((v + 0.055) / 1.055, 2.4);
+    });
+    return 0.2126 * lin[0] + 0.7152 * lin[1] + 0.0722 * lin[2];
+  }
+
+  function contrast(hexA, hexB) {
+    var la = relLuminance(hexA), lb = relLuminance(hexB);
+    var lighter = Math.max(la, lb), darker = Math.min(la, lb);
+    return (lighter + 0.05) / (darker + 0.05);
+  }
+
+  function labelInkFor(fillHex) {
+    var white = "#ffffff", black = "#0b0b0b";
+    return contrast(fillHex, white) >= contrast(fillHex, black) ? white : black;
+  }
+
+  // ---------- rendering: process table ----------
+
+  function renderProcTable() {
+    var tbody = document.getElementById("proc-rows");
+    tbody.innerHTML = "";
+    state.processes.forEach(function (p, i) {
+      var tr = document.createElement("tr");
+
+      var tdPid = document.createElement("td");
+      var chip = document.createElement("span");
+      chip.className = "pid-chip";
+      var dot = document.createElement("span");
+      dot.className = "swatch";
+      dot.style.background = cssVar(PALETTE[i % PALETTE.length]);
+      chip.appendChild(dot);
+      chip.appendChild(document.createTextNode(p.pid));
+      tdPid.appendChild(chip);
+      tr.appendChild(tdPid);
+
+      ["arrival", "burst", "priority"].forEach(function (field) {
+        var td = document.createElement("td");
+        var input = document.createElement("input");
+        input.type = "number";
+        input.min = field === "arrival" ? "0" : "1";
+        input.value = p[field];
+        input.addEventListener("change", function () {
+          var v = parseInt(input.value, 10);
+          if (isNaN(v) || v < parseInt(input.min, 10)) v = parseInt(input.min, 10);
+          p[field] = v;
+          input.value = v;
+          recomputeAll();
+        });
+        td.appendChild(input);
+        tr.appendChild(td);
+      });
+
+      var tdDel = document.createElement("td");
+      var delBtn = document.createElement("button");
+      delBtn.className = "icon-btn";
+      delBtn.type = "button";
+      delBtn.title = "Remove process";
+      delBtn.textContent = "✕";
+      delBtn.disabled = state.processes.length <= 2;
+      delBtn.addEventListener("click", function () {
+        state.processes.splice(i, 1);
+        renumber();
+        renderProcTable();
+        renderLegend();
+        recomputeAll();
+      });
+      tdDel.appendChild(delBtn);
+      tr.appendChild(tdDel);
+
+      tbody.appendChild(tr);
+    });
+
+    document.getElementById("add-row-btn").disabled = state.processes.length >= MAX_PROCESSES;
+  }
+
+  function renumber() {
+    state.processes.forEach(function (p, i) { p.pid = "P" + (i + 1); });
+  }
+
+  function renderLegend() {
+    var legend = document.getElementById("legend");
+    legend.innerHTML = "";
+    state.processes.forEach(function (p, i) {
+      var item = document.createElement("span");
+      item.className = "legend-item";
+      item.dataset.pid = p.pid;
+      var dot = document.createElement("span");
+      dot.className = "swatch";
+      dot.style.background = cssVar(PALETTE[i % PALETTE.length]);
+      var label = document.createElement("span");
+      label.className = "pid";
+      label.textContent = p.pid;
+      item.appendChild(dot);
+      item.appendChild(label);
+      item.addEventListener("mouseenter", function () { setHotPid(p.pid); });
+      item.addEventListener("mouseleave", function () { setHotPid(null); });
+      legend.appendChild(item);
+    });
+  }
+
+  function setHotPid(pid) {
+    var legend = document.getElementById("legend");
+    legend.classList.toggle("dimmed", !!pid);
+    Array.prototype.forEach.call(legend.querySelectorAll(".legend-item"), function (el) {
+      el.classList.toggle("hot", el.dataset.pid === pid);
+    });
+    Array.prototype.forEach.call(document.querySelectorAll(".seg-rect"), function (el) {
+      var match = !pid || el.dataset.pid === pid;
+      el.setAttribute("opacity", pid ? (match ? 1 : 0.28) : 1);
+    });
+  }
+
+  // ---------- panels ----------
+
+  function buildPanelSkeleton(ps) {
+    var panel = document.createElement("section");
+    panel.className = "card panel";
+    panel.id = "panel-" + ps.key;
+
+    var head = document.createElement("div");
+    head.className = "card-head";
+    var h2 = document.createElement("h2");
+    h2.textContent = ps.label;
+    var meta = document.createElement("div");
+    meta.className = "panel-meta";
+    meta.id = "meta-" + ps.key;
+    head.appendChild(h2);
+    head.appendChild(meta);
+    panel.appendChild(head);
+
+    var toolbar = document.createElement("div");
+    toolbar.className = "toolbar";
+    toolbar.innerHTML =
+      '<button class="icon-btn" data-act="play" title="Play">▶</button>' +
+      '<button class="icon-btn" data-act="reset" title="Reset">↺</button>' +
+      '<input type="range" data-act="scrub" min="0" max="1" step="1" value="0">' +
+      '<div class="speed-select" data-act="speed">' +
+        '<button data-speed="0.5">0.5x</button>' +
+        '<button data-speed="1" class="active">1x</button>' +
+        '<button data-speed="2">2x</button>' +
+        '<button data-speed="4">4x</button>' +
+      '</div>';
+    panel.appendChild(toolbar);
+
+    var strip = document.createElement("div");
+    strip.className = "state-strip";
+    strip.id = "strip-" + ps.key;
+    panel.appendChild(strip);
+
+    var chartWrap = document.createElement("div");
+    chartWrap.className = "chart-scroll";
+    var svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
+    svg.setAttribute("class", "gantt");
+    svg.id = "svg-" + ps.key;
+    chartWrap.appendChild(svg);
+    panel.appendChild(chartWrap);
+
+    var metricsWrap = document.createElement("div");
+    metricsWrap.className = "metrics-wrap";
+    metricsWrap.id = "metrics-" + ps.key;
+    panel.appendChild(metricsWrap);
+
+    wireToolbar(toolbar, ps);
+    return panel;
+  }
+
+  function wireToolbar(toolbar, ps) {
+    toolbar.querySelector('[data-act="play"]').addEventListener("click", function () { togglePlay(ps); });
+    toolbar.querySelector('[data-act="reset"]').addEventListener("click", function () { resetPanel(ps); });
+    toolbar.querySelector('[data-act="scrub"]').addEventListener("input", function (e) {
+      pausePanel(ps);
+      ps.currentTime = parseInt(e.target.value, 10);
+      renderPanel(ps);
+    });
+    Array.prototype.forEach.call(toolbar.querySelectorAll('[data-speed]'), function (btn) {
+      btn.addEventListener("click", function () {
+        ps.speed = parseFloat(btn.dataset.speed);
+        Array.prototype.forEach.call(toolbar.querySelectorAll('[data-speed]'), function (b) { b.classList.remove("active"); });
+        btn.classList.add("active");
+        if (ps.playing) { pausePanel(ps); startPlay(ps); }
+      });
+    });
+  }
+
+  function togglePlay(ps) {
+    if (ps.playing) pausePanel(ps); else startPlay(ps);
+  }
+
+  function startPlay(ps) {
+    if (ps.currentTime >= ps.maxTime) ps.currentTime = 0;
+    ps.playing = true;
+    updatePlayIcon(ps);
+    ps.timer = setInterval(function () {
+      ps.currentTime++;
+      if (ps.currentTime >= ps.maxTime) {
+        ps.currentTime = ps.maxTime;
+        pausePanel(ps);
+      }
+      renderPanel(ps);
+    }, 550 / ps.speed);
+  }
+
+  function pausePanel(ps) {
+    ps.playing = false;
+    if (ps.timer) { clearInterval(ps.timer); ps.timer = null; }
+    updatePlayIcon(ps);
+  }
+
+  function updatePlayIcon(ps) {
+    var btn = document.querySelector("#panel-" + ps.key + ' [data-act="play"]');
+    if (btn) { btn.textContent = ps.playing ? "⏸" : "▶"; btn.title = ps.playing ? "Pause" : "Play"; }
+  }
+
+  function resetPanel(ps) {
+    pausePanel(ps);
+    ps.currentTime = 0;
+    renderPanel(ps);
+  }
+
+  // ---------- render one panel's chart, strip, metrics ----------
+
+  function renderPanel(ps) {
+    var meta = document.getElementById("meta-" + ps.key);
+    meta.textContent = ps.key === "rr" ? ("quantum = " + state.quantum) : "lower # = higher priority";
+
+    var scrub = document.querySelector("#panel-" + ps.key + ' [data-act="scrub"]');
+    scrub.max = ps.maxTime;
+    scrub.value = ps.currentTime;
+
+    renderStrip(ps);
+    renderChart(ps);
+    renderMetricsTable(ps);
+  }
+
+  function renderStrip(ps) {
+    var strip = document.getElementById("strip-" + ps.key);
+    var atEnd = ps.currentTime >= ps.maxTime;
+    var live = liveStateAt(state.processes, ps.segments, ps.currentTime);
+
+    strip.innerHTML = "";
+
+    var tStat = document.createElement("div");
+    tStat.className = "stat";
+    tStat.innerHTML = "t = <b>" + ps.currentTime + "</b>";
+    strip.appendChild(tStat);
+
+    var runStat = document.createElement("div");
+    runStat.className = "stat";
+    var runChip = document.createElement("span");
+    if (atEnd) {
+      runChip.className = "chip idle";
+      runChip.textContent = "simulation complete";
+    } else if (live.running) {
+      runChip.className = "chip";
+      runChip.style.color = colorForPid(live.running);
+      runChip.style.borderColor = colorForPid(live.running);
+      runChip.textContent = "▶ " + live.running;
+    } else {
+      runChip.className = "chip idle";
+      runChip.textContent = "IDLE";
+    }
+    runStat.appendChild(document.createTextNode("Running "));
+    runStat.appendChild(runChip);
+    strip.appendChild(runStat);
+
+    if (!atEnd) {
+      var qStat = document.createElement("div");
+      qStat.className = "stat";
+      qStat.appendChild(document.createTextNode("Ready queue "));
+      var chips = document.createElement("span");
+      chips.className = "queue-chips";
+      if (live.ready.length === 0) {
+        var none = document.createElement("span");
+        none.className = "chip idle";
+        none.textContent = "—";
+        chips.appendChild(none);
+      } else {
+        live.ready.forEach(function (p) {
+          var c = document.createElement("span");
+          c.className = "chip";
+          c.style.color = colorForPid(p.pid);
+          c.style.borderColor = colorForPid(p.pid);
+          c.textContent = p.pid;
+          chips.appendChild(c);
+        });
+      }
+      qStat.appendChild(chips);
+      strip.appendChild(qStat);
+    }
+
+    var doneStat = document.createElement("div");
+    doneStat.className = "stat";
+    doneStat.innerHTML = "Completed <b>" + live.completed + " / " + state.processes.length + "</b>";
+    strip.appendChild(doneStat);
+  }
+
+  function renderChart(ps) {
+    var svg = document.getElementById("svg-" + ps.key);
+    svg.innerHTML = "";
+    var maxTime = Math.max(ps.maxTime, 1);
+    var width = maxTime * UNIT_PX;
+    var height = LANE_Y + LANE_H + 34;
+    svg.setAttribute("viewBox", "0 0 " + width + " " + height);
+    svg.setAttribute("width", width);
+    svg.setAttribute("height", height);
+
+    var ns = "http://www.w3.org/2000/svg";
+
+    var clipId = "clip-" + ps.key;
+    var defs = document.createElementNS(ns, "defs");
+    var clip = document.createElementNS(ns, "clipPath");
+    clip.setAttribute("id", clipId);
+    var clipRect = document.createElementNS(ns, "rect");
+    clipRect.setAttribute("x", 0);
+    clipRect.setAttribute("y", 0);
+    clipRect.setAttribute("width", ps.currentTime * UNIT_PX);
+    clipRect.setAttribute("height", height);
+    clip.appendChild(clipRect);
+    defs.appendChild(clip);
+    svg.appendChild(defs);
+
+    // baseline
+    var baseline = document.createElementNS(ns, "line");
+    baseline.setAttribute("class", "baseline-line");
+    baseline.setAttribute("x1", 0);
+    baseline.setAttribute("x2", width);
+    baseline.setAttribute("y1", LANE_Y + LANE_H);
+    baseline.setAttribute("y2", LANE_Y + LANE_H);
+    baseline.setAttribute("stroke-width", "1");
+    svg.appendChild(baseline);
+
+    var segGroup = document.createElementNS(ns, "g");
+    segGroup.setAttribute("clip-path", "url(#" + clipId + ")");
+
+    ps.segments.forEach(function (s) {
+      var x = s.start * UNIT_PX + GAP / 2;
+      var w = Math.max((s.end - s.start) * UNIT_PX - GAP, 1);
+      var fill = s.pid === null ? cssVar("--idle-fill") : colorForPid(s.pid);
+
+      var rect = document.createElementNS(ns, "rect");
+      rect.setAttribute("class", "seg-rect");
+      rect.setAttribute("x", x);
+      rect.setAttribute("y", LANE_Y);
+      rect.setAttribute("width", w);
+      rect.setAttribute("height", LANE_H);
+      rect.setAttribute("rx", 4);
+      rect.setAttribute("fill", fill);
+      if (s.pid) rect.dataset.pid = s.pid;
+      segGroup.appendChild(rect);
+
+      var label = s.pid === null ? "IDLE" : s.pid;
+      var approxCharW = 7.2;
+      if (w >= label.length * approxCharW + 10) {
+        var text = document.createElementNS(ns, "text");
+        text.setAttribute("class", "seg-label");
+        text.setAttribute("x", x + w / 2);
+        text.setAttribute("y", LANE_Y + LANE_H / 2 + 4);
+        text.setAttribute("text-anchor", "middle");
+        text.setAttribute("fill", s.pid === null ? cssVar("--text-secondary") : labelInkFor(fill));
+        text.textContent = label;
+        segGroup.appendChild(text);
+      }
+
+      rect.addEventListener("mousemove", function (evt) { showTooltip(evt, s); });
+      rect.addEventListener("mouseleave", hideTooltip);
+    });
+
+    svg.appendChild(segGroup);
+
+    // ticks at every segment boundary
+    var boundaries = [0];
+    ps.segments.forEach(function (s) { boundaries.push(s.end); });
+    var seen = {};
+    boundaries.forEach(function (tb) {
+      if (seen[tb]) return;
+      seen[tb] = true;
+      var x = tb * UNIT_PX;
+      var tick = document.createElementNS(ns, "line");
+      tick.setAttribute("class", "tick-mark");
+      tick.setAttribute("x1", x); tick.setAttribute("x2", x);
+      tick.setAttribute("y1", LANE_Y + LANE_H);
+      tick.setAttribute("y2", LANE_Y + LANE_H + 5);
+      svg.appendChild(tick);
+
+      var label = document.createElementNS(ns, "text");
+      label.setAttribute("class", "tick-label");
+      label.setAttribute("x", x);
+      label.setAttribute("y", LANE_Y + LANE_H + 18);
+      label.setAttribute("text-anchor", tb === 0 ? "start" : (tb === maxTime ? "end" : "middle"));
+      label.textContent = tb;
+      svg.appendChild(label);
+    });
+
+    // playhead
+    if (ps.currentTime > 0 && ps.currentTime < ps.maxTime) {
+      var ph = document.createElementNS(ns, "line");
+      ph.setAttribute("class", "playhead-line");
+      var px = ps.currentTime * UNIT_PX;
+      ph.setAttribute("x1", px); ph.setAttribute("x2", px);
+      ph.setAttribute("y1", LANE_Y - 6); ph.setAttribute("y2", LANE_Y + LANE_H);
+      svg.appendChild(ph);
+    }
+  }
+
+  function showTooltip(evt, seg) {
+    var tt = document.getElementById("tooltip");
+    var label = seg.pid || "IDLE";
+    tt.innerHTML = "<b>" + label + "</b>&nbsp;&nbsp;" + seg.start + "–" + seg.end +
+      " <span style='opacity:.7'>(" + (seg.end - seg.start) + " units)</span>";
+    tt.style.left = (evt.clientX + 14) + "px";
+    tt.style.top = (evt.clientY + 14) + "px";
+    tt.hidden = false;
+  }
+  function hideTooltip() { document.getElementById("tooltip").hidden = true; }
