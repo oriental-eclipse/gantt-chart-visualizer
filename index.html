@@ -483,3 +483,171 @@
 </div>
 
 <div id="tooltip" hidden></div>
+
+<script>
+(function () {
+  "use strict";
+
+  var PALETTE = ["--s1","--s2","--s3","--s4","--s5","--s6","--s7","--s8"];
+  var MAX_PROCESSES = 8;
+  var UNIT_PX = 34;
+  var LANE_Y = 22;
+  var LANE_H = 60;
+  var GAP = 2;
+
+  var state = {
+    processes: [
+      { pid: "P1", arrival: 0, burst: 5, priority: 3 },
+      { pid: "P2", arrival: 1, burst: 3, priority: 1 },
+      { pid: "P3", arrival: 2, burst: 8, priority: 4 },
+      { pid: "P4", arrival: 3, burst: 6, priority: 2 },
+      { pid: "P5", arrival: 4, burst: 4, priority: 5 }
+    ],
+    quantum: 2,
+    mode: "compare"
+  };
+
+  var panelStates = {
+    rr: { key: "rr", label: "Round Robin", playing: false, currentTime: 0, speed: 1, timer: null, segments: [], metrics: [], maxTime: 0 },
+    priority: { key: "priority", label: "Preemptive Priority", playing: false, currentTime: 0, speed: 1, timer: null, segments: [], metrics: [], maxTime: 0 }
+  };
+
+  // ---------- scheduling engine ----------
+
+  function mergeUnits(raw) {
+    var segments = [];
+    for (var i = 0; i < raw.length; i++) {
+      var t = raw[i][0], pid = raw[i][1];
+      var last = segments[segments.length - 1];
+      if (last && last.pid === pid) {
+        last.end = t + 1;
+      } else {
+        segments.push({ pid: pid, start: t, end: t + 1 });
+      }
+    }
+    return segments;
+  }
+
+  function computeMetrics(processes, segments) {
+    var completion = {};
+    segments.forEach(function (s) {
+      if (s.pid !== null) completion[s.pid] = s.end;
+    });
+    return processes.map(function (p) {
+      var ct = completion[p.pid];
+      var tat = ct - p.arrival;
+      var wt = tat - p.burst;
+      return { pid: p.pid, arrival: p.arrival, burst: p.burst, priority: p.priority,
+               completion: ct, turnaround: tat, waiting: wt };
+    });
+  }
+
+  function roundRobin(processes, quantum) {
+    var remaining = {};
+    processes.forEach(function (p) { remaining[p.pid] = p.burst; });
+
+    var byArrival = processes.slice().sort(function (a, b) {
+      return a.arrival - b.arrival || (a.pid < b.pid ? -1 : 1);
+    });
+
+    var queue = [];
+    var queued = {};
+    var arrivedIdx = 0;
+    var current = null;
+    var sliceLeft = 0;
+    var raw = [];
+    var t = 0;
+    var finished = 0;
+
+    function enqueue(pid) {
+      if (!queued[pid]) { queue.push(pid); queued[pid] = true; }
+    }
+
+    while (finished < processes.length) {
+      while (arrivedIdx < byArrival.length && byArrival[arrivedIdx].arrival <= t) {
+        enqueue(byArrival[arrivedIdx].pid);
+        arrivedIdx++;
+      }
+
+      if (current === null || sliceLeft === 0) {
+        if (current !== null && remaining[current] > 0) enqueue(current);
+        current = null;
+        while (queue.length) {
+          var cand = queue.shift();
+          queued[cand] = false;
+          if (remaining[cand] > 0) {
+            current = cand;
+            sliceLeft = Math.min(quantum, remaining[current]);
+            break;
+          }
+        }
+      }
+
+      if (current === null) {
+        raw.push([t, null]);
+        t++;
+        continue;
+      }
+
+      raw.push([t, current]);
+      remaining[current]--;
+      sliceLeft--;
+      t++;
+
+      if (remaining[current] === 0) {
+        finished++;
+        current = null;
+        sliceLeft = 0;
+      }
+    }
+
+    return mergeUnits(raw);
+  }
+
+  function preemptivePriority(processes) {
+    var remaining = {};
+    processes.forEach(function (p) { remaining[p.pid] = p.burst; });
+
+    var raw = [];
+    var current = null;
+    var t = 0;
+
+    function totalRemaining() {
+      var sum = 0;
+      for (var k in remaining) sum += remaining[k];
+      return sum;
+    }
+
+    while (totalRemaining() > 0) {
+      var ready = processes.filter(function (p) { return p.arrival <= t && remaining[p.pid] > 0; });
+
+      if (ready.length === 0) {
+        raw.push([t, null]);
+        current = null;
+        t++;
+        continue;
+      }
+
+      var bestPriority = Math.min.apply(null, ready.map(function (p) { return p.priority; }));
+      var tied = ready.filter(function (p) { return p.priority === bestPriority; });
+
+      var chosen;
+      var currentTied = current !== null && tied.some(function (p) { return p.pid === current; });
+      if (currentTied) {
+        chosen = current;
+      } else {
+        var best = tied[0];
+        tied.forEach(function (p) {
+          if (p.arrival < best.arrival || (p.arrival === best.arrival && p.pid < best.pid)) best = p;
+        });
+        chosen = best.pid;
+      }
+
+      raw.push([t, chosen]);
+      remaining[chosen]--;
+      current = chosen;
+      t++;
+    }
+
+    return mergeUnits(raw);
+  }
